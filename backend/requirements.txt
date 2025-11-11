@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+sqlmodel
+opencv-python
+python-multipart
+pydantic
