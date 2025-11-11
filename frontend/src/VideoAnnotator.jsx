@@ -1,19 +1,22 @@
 import React, { useRef, useState, useEffect } from "react";
 
-
-export default function VideoAnnotator() {
+export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const containerRef = useRef(null);
 
-  const [annotations, setAnnotations] = useState([]); // persisted boxes
-  const [currentBox, setCurrentBox] = useState(null); // box being drawn
+  // States
+  const [annotations, setAnnotations] = useState([]);
+  const [currentBox, setCurrentBox] = useState(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [videoFileUrl, setVideoFileUrl] = useState(null);
-  const [videoId, setVideoId] = useState(null); // id from backend (optional)
-  const [fps, setFps] = useState(30);
+  const [selectedTool, setSelectedTool] = useState("select");
+  const [labels, setLabels] = useState(["car", "person", "tree"]);
+  const [activeLabel, setActiveLabel] = useState("car");
+  const [newLabel, setNewLabel] = useState("");
 
-  // helper: sync canvas size to video display size
+  // =============================
+  // SYNC CANVAS
+  // =============================
   const syncCanvas = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -21,9 +24,6 @@ export default function VideoAnnotator() {
     const rect = video.getBoundingClientRect();
     canvas.width = rect.width;
     canvas.height = rect.height;
-    canvas.style.left = `${rect.left}px`;
-    canvas.style.top = `${rect.top}px`;
-    drawAll();
   };
 
   useEffect(() => {
@@ -33,269 +33,320 @@ export default function VideoAnnotator() {
 
   useEffect(() => {
     syncCanvas();
-  }, [videoFileUrl, annotations]);
+    drawAnnotations();
+  }, [videoFileUrl, annotations, currentBox]);
 
-  // Draw boxes on canvas
-  const drawAll = () => {
+  // =============================
+  // DRAW ANNOTATIONS
+  // =============================
+  const drawAnnotations = () => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Draw saved annotations
     annotations.forEach((a) => {
-      drawBox(ctx, a, false);
-    });
-    // Draw current drawing box
-    if (currentBox) {
-      drawBox(ctx, currentBox, true);
-    }
-  };
-
-  const drawBox = (ctx, box, isTemp) => {
-    ctx.lineWidth = isTemp ? 2 : 2;
-    ctx.setLineDash(isTemp ? [6] : []);
-    ctx.strokeStyle = isTemp ? "red" : "lime";
-    ctx.strokeRect(box.x, box.y, box.width, box.height);
-
-    if (!isTemp && box.label) {
+      ctx.strokeStyle = "lime";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(a.x, a.y, a.width, a.height);
       ctx.font = "14px Arial";
       ctx.fillStyle = "lime";
-      ctx.fillText(box.label, box.x + 4, box.y + 14);
+      ctx.fillText(a.label, a.x + 4, a.y + 14);
+    });
+    if (currentBox) {
+      ctx.strokeStyle = "red";
+      ctx.setLineDash([6]);
+      ctx.strokeRect(currentBox.x, currentBox.y, currentBox.width, currentBox.height);
+      ctx.setLineDash([]);
     }
   };
 
-  // Convert page coords -> canvas coords
+  // =============================
+  // MOUSE COORDS
+  // =============================
   const getCanvasCoords = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
+  // =============================
+  // DRAW BOXES (MOUSE EVENTS)
+  // =============================
   const handleMouseDown = (e) => {
-    if (!videoRef.current) return;
+    if (selectedTool !== "draw") return;
     setIsDrawing(true);
     const pos = getCanvasCoords(e);
-    setCurrentBox({ x: pos.x, y: pos.y, width: 0, height: 0, label: "object" });
+    setCurrentBox({ x: pos.x, y: pos.y, width: 0, height: 0, label: activeLabel });
   };
 
   const handleMouseMove = (e) => {
     if (!isDrawing || !currentBox) return;
     const pos = getCanvasCoords(e);
-    const newBox = {
+    setCurrentBox({
       ...currentBox,
       width: pos.x - currentBox.x,
       height: pos.y - currentBox.y,
-    };
-    setCurrentBox(newBox);
-    drawAll(); // immediate visual feedback
+    });
   };
 
-  const handleMouseUp = (e) => {
+  const handleMouseUp = () => {
     if (!isDrawing || !currentBox) return;
     setIsDrawing(false);
-
-    // Normalize width/height to positive values and adjust x/y if needed
     let { x, y, width, height } = currentBox;
     if (width < 0) {
-      x = x + width;
-      width = Math.abs(width);
+      x += width;
+      width = -width;
     }
     if (height < 0) {
-      y = y + height;
-      height = Math.abs(height);
+      y += height;
+      height = -height;
     }
-
-    // Convert canvas coords back to video-relative coordinates ratio (0..1)
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    const scaleX = video.videoWidth / canvas.width || 1;
-    const scaleY = video.videoHeight / canvas.height || 1;
-
-    // Store both display coords (for drawing) and video-space coords (for backend)
-    const displayBox = { x, y, width, height, label: currentBox.label };
-
-    // convert to video pixel coords
-    const videoBox = {
-      x: x * scaleX,
-      y: y * scaleY,
-      width: width * scaleX,
-      height: height * scaleY,
-    };
-
-    // frame calculation using currentTime and fps
-    const currentFrame = Math.floor(video.currentTime * fps);
-
-    const newAnn = {
-      frame: currentFrame,
-      x: videoBox.x,
-      y: videoBox.y,
-      width: videoBox.width,
-      height: videoBox.height,
-      label: currentBox.label,
-      // keep display coords so we can draw easily
-      display: displayBox,
-    };
-
-    setAnnotations((prev) => [...prev, newAnn]);
+    setAnnotations([...annotations, { x, y, width, height, label: currentBox.label }]);
     setCurrentBox(null);
-    drawAll();
   };
 
-  // Save annotations to backend
-  const saveAnnotations = async () => {
-    if (!videoId) {
-      alert("Register the video first (or set video_id).");
-      return;
-    }
-    // Prepare payload: strip display fields
-    const payload = {
-      video_id: videoId,
-      fps,
-      annotations: annotations.map((a) => ({
-        frame: a.frame,
-        x: a.x,
-        y: a.y,
-        width: a.width,
-        height: a.height,
-        label: a.label,
-      })),
-    };
-
-    const res = await fetch(`${API_BASE}/annotations/save/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    alert(`Saved ${data.count} annotations`);
-  };
-
-  // Load annotations for a given video id
-  const loadAnnotationsFromServer = async (vid) => {
-    setAnnotations([]);
-    setVideoId(vid);
-    const res = await fetch(`${API_BASE}/annotations/${vid}`);
-    const arr = await res.json();
-
-    // Need to convert video-space coords to display coords
+  // =============================
+  // VIDEO CONTROLS
+  // =============================
+  const togglePlayPause = () => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) {
-      // store raw, will transform on next sync
-      setAnnotations(
-        arr.map((a) => ({
-          ...a,
-          display: { x: a.x, y: a.y, width: a.width, height: a.height },
-        }))
-      );
-      return;
-    }
-
-    // ensure metadata available (videoWidth/videoHeight)
-    const scaleX = canvas.width / (video.videoWidth || canvas.width);
-    const scaleY = canvas.height / (video.videoHeight || canvas.height);
-
-    const converted = arr.map((a) => ({
-      ...a,
-      display: {
-        x: a.x * scaleX,
-        y: a.y * scaleY,
-        width: a.width * scaleX,
-        height: a.height * scaleY,
-      },
-    }));
-    setAnnotations(converted);
-    drawAll();
+    if (!video) return;
+    if (video.paused) video.play();
+    else video.pause();
   };
 
-  // handle file selection locally and optionally register video to backend
-  const handleFileChange = async (e) => {
+  const replayVideo = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = 0;
+    video.play();
+  };
+
+  const enterFullscreen = () => {
+    const video = videoRef.current;
+    if (video.requestFullscreen) video.requestFullscreen();
+  };
+
+  const handleVideoClick = () => {
+    togglePlayPause();
+  };
+
+  const handleVideoDoubleClick = () => {
+    enterFullscreen();
+  };
+
+  const handleVideoRightClick = (e) => {
+    e.preventDefault();
+    replayVideo();
+  };
+
+  // =============================
+  // KEYBOARD SHORTCUTS
+  // =============================
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const video = videoRef.current;
+      switch (e.key.toLowerCase()) {
+        case " ": // space to play/pause
+          e.preventDefault();
+          togglePlayPause();
+          break;
+        case "f": // fullscreen
+          enterFullscreen();
+          break;
+        case "r": // replay
+          replayVideo();
+          break;
+        case "u": // undo
+          setAnnotations((prev) => prev.slice(0, -1));
+          break;
+        case "d": // draw mode
+          setSelectedTool("draw");
+          break;
+        case "s": // select mode
+          setSelectedTool("select");
+          break;
+        case "delete": // delete last
+        case "backspace":
+          setAnnotations((prev) => prev.slice(0, -1));
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // =============================
+  // TOOL & LABEL MANAGEMENT
+  // =============================
+  const handleUpload = (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-    if (videoFileUrl) URL.revokeObjectURL(videoFileUrl);
-    const url = URL.createObjectURL(file);
-    setVideoFileUrl(url);
-
-    // Optionally register the file metadata to backend to get video_id
-    // we'll use filename; backend creates a Video record and returns id
-    const payload = { filename: file.name };
-    const res = await fetch(`${API_BASE}/videos/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    setVideoId(data.id);
-    alert(`Video registered with id ${data.id}`);
+    if (file) {
+      if (videoFileUrl) URL.revokeObjectURL(videoFileUrl);
+      const url = URL.createObjectURL(file);
+      setVideoFileUrl(url);
+      setAnnotations([]);
+    }
   };
 
-  // When video metadata is ready (videoWidth/videoHeight), sync canvas and convert existing annotations
-  const handleLoadedMetadata = () => {
-    syncCanvas();
-    // If annotations exist from server (video-space coords), convert them to display coords
-    setAnnotations((prev) =>
-      prev.map((a) => {
-        if (!a.x || typeof a.display !== "undefined") return a; // already converted
-        const canvas = canvasRef.current;
-        const video = videoRef.current;
-        const scaleX = canvas.width / (video.videoWidth || canvas.width);
-        const scaleY = canvas.height / (video.videoHeight || canvas.height);
-        return {
-          ...a,
-          display: {
-            x: a.x * scaleX,
-            y: a.y * scaleY,
-            width: a.width * scaleX,
-            height: a.height * scaleY,
-          },
-        };
-      })
-    );
-    drawAll();
+  const handleExport = () => {
+    const exportData = JSON.stringify(annotations, null, 2);
+    const blob = new Blob([exportData], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "annotations.json";
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
+  const addLabel = () => {
+    if (newLabel.trim() && !labels.includes(newLabel)) {
+      setLabels([...labels, newLabel.trim()]);
+      setActiveLabel(newLabel.trim());
+      setNewLabel("");
+    }
+  };
+
+  const deleteLabel = (labelToDelete) => {
+    setLabels(labels.filter((l) => l !== labelToDelete));
+    if (activeLabel === labelToDelete) setActiveLabel(labels[0] || "");
+  };
+
+  // =============================
+  // RENDER
+  // =============================
   return (
-    <div ref={containerRef} style={{ position: "relative", maxWidth: 800 }}>
-      <div style={{ marginBottom: 8 }}>
-        <input type="file" accept="video/*" onChange={handleFileChange} />
-        <button onClick={saveAnnotations} style={{ marginLeft: 8 }}>
-          Save Annotations
-        </button>
-      </div>
+    <div style={{ fontFamily: "Arial, sans-serif", margin: 20 }}>
+      <header style={{ fontSize: 24, fontWeight: "bold", marginBottom: 20 }}>
+        Video Annotation System
+      </header>
 
-      <div style={{ position: "relative" }}>
-        <video
-          ref={videoRef}
-          src={videoFileUrl}
-          width={800}
-          controls
-          onLoadedMetadata={handleLoadedMetadata}
-          style={{ display: "block", maxWidth: "100%" }}
-        />
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            cursor: "crosshair",
-            pointerEvents: "auto",
-          }}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-        />
-      </div>
+      <div style={{ display: "flex", gap: 20 }}>
+        {/* SIDEBAR */}
+        <aside style={{ width: 200, border: "1px solid #ccc", padding: 10 }}>
+          <div>
+            <h3>Labels</h3>
+            {labels.map((label) => (
+              <div key={label} style={{ display: "flex", alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="labels"
+                  checked={activeLabel === label}
+                  onChange={() => setActiveLabel(label)}
+                />
+                <label style={{ marginLeft: 6, flex: 1 }}>{label}</label>
+                <button
+                  onClick={() => deleteLabel(label)}
+                  style={{
+                    background: "red",
+                    color: "white",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: "2px 5px",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <div style={{ marginTop: 10 }}>
+              <input
+                type="text"
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder="New label"
+                style={{ width: "100%", marginBottom: 5 }}
+              />
+              <button
+                onClick={addLabel}
+                style={{
+                  width: "100%",
+                  background: "#4caf50",
+                  color: "white",
+                  border: "none",
+                  padding: "5px",
+                  cursor: "pointer",
+                }}
+              >
+                Add Label
+              </button>
+            </div>
+          </div>
 
-      <div style={{ marginTop: 12 }}>
-        <strong>Annotations: </strong> {annotations.length}
-        <ul>
-          {annotations.map((a, i) => (
-            <li key={i}>
-              frame {a.frame} — {a.label} — [{Math.round(a.x)},{Math.round(a.y)}] {Math.round(a.width)}x{Math.round(a.height)}
-            </li>
-          ))}
-        </ul>
+          <div style={{ marginTop: 20 }}>
+            <h3>Tools</h3>
+            {["select", "draw", "undo"].map((tool) => (
+              <button
+                key={tool}
+                onClick={() => {
+                  if (tool === "undo") setAnnotations((prev) => prev.slice(0, -1));
+                  else setSelectedTool(tool);
+                }}
+                style={{
+                  marginTop: 5,
+                  width: "100%",
+                  padding: "6px",
+                  backgroundColor: selectedTool === tool ? "#4caf50" : "#eee",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                {tool.charAt(0).toUpperCase() + tool.slice(1)}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* MAIN AREA */}
+        <section>
+          <div
+            style={{
+              width: 800,
+              height: 450,
+              border: "3px solid #000",
+              position: "relative",
+              marginBottom: 10,
+            }}
+          >
+            <video
+              ref={videoRef}
+              src={videoFileUrl}
+              width="100%"
+              height="100%"
+              controls
+              style={{ display: "block", backgroundColor: "#000", cursor: "pointer" }}
+              onClick={handleVideoClick}
+              onDoubleClick={handleVideoDoubleClick}
+              onContextMenu={handleVideoRightClick}
+            />
+            <canvas
+              ref={canvasRef}
+              style={{ position: "absolute", top: 0, left: 0 }}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+            />
+          </div>
+
+          {/* CUSTOM VIDEO CONTROLS */}
+          <div>
+            <input type="file" accept="video/*" onChange={handleUpload} />
+            <button onClick={togglePlayPause} style={{ marginLeft: 10 }}>
+              ▶️ / ⏸️
+            </button>
+            <button onClick={replayVideo} style={{ marginLeft: 10 }}>
+              🔁 Replay
+            </button>
+            <button onClick={enterFullscreen} style={{ marginLeft: 10 }}>
+              ⛶ Fullscreen
+            </button>
+            <button onClick={handleExport} style={{ marginLeft: 10 }}>
+              💾 Export
+            </button>
+          </div>
+        </section>
       </div>
     </div>
   );
